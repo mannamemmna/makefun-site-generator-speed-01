@@ -186,10 +186,23 @@ function headingOf(line) {
 }
 
 function endsParagraph(line) {
-  return BLANK.test(line) || FENCE_OPEN.test(line) || headingOf(line) !== null || HR.test(line);
+  // one combined pass: blank / fence open / heading-with-text / hr (same four
+  // conditions the vendor ORs, disjoint alternates)
+  return ENDS_PARAGRAPH_RE.test(line);
 }
 
-const trimLine = (line) => line.replace(/^[ \t]+|[ \t]+$/g, '');
+const ENDS_PARAGRAPH_RE = /^(?:[ \t]*$|```[A-Za-z0-9_+-]*[ \t]*$|#{1,6}[ \t]+.*\S|(?:---|\*\*\*)[ \t]*$)/;
+
+// manual trim of space/tab only — replaces /^[ \t]+|[ \t]+$/g.replace
+const trimLine = (line) => {
+  let a = 0, b = line.length;
+  while (a < b && line.charCodeAt(a) === 9) a++;
+  if (a < b && line.charCodeAt(a) === 32) { a++; while (a < b && line.charCodeAt(a) === 32) a++; }
+  if (a === b) return '';
+  while (b > a && line.charCodeAt(b - 1) === 9) b--;
+  if (b > a && line.charCodeAt(b - 1) === 32) { b--; while (b > a && line.charCodeAt(b - 1) === 32) b--; }
+  return a === 0 && b === line.length ? line : line.slice(a, b);
+};
 
 function lex(src) {
   const lines = src.split('\n');
@@ -240,6 +253,7 @@ function lex(src) {
 }
 
 const ESCAPABLE = new Set(['\\', '`', '*', '_', '[', ']', '(', ')', '#', '+', '-', '.', '!', '>']);
+const SPECIAL_RE = /[`*\[\\]/g;
 
 /** The first index from `from` where `s` holds `what` outside a backslash escape, or -1. */
 function findUnescaped(s, what, from) {
@@ -307,11 +321,10 @@ function inline(s, env) {
       continue;
     }
     let j = i + 1;
-    while (j < n) {
-      const cj = s[j];
-      if (cj === '`' || cj === '*' || cj === '[' || cj === '\\') break;
-      j++;
-    }
+    SPECIAL_RE.lastIndex = j;
+    const m = SPECIAL_RE.exec(s);
+    if (m === null) { out += escapeHtml(s.slice(i)); break; }
+    j = m.index;
     out += escapeHtml(s.slice(i, j));
     i = j;
   }
@@ -553,11 +566,16 @@ export const RESERVED = Object.freeze(['posts', 'tags', 'page']);
 
 const byCodeUnits = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 const SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]*:/;
-const WORDS_RE = /\S+/g;
-
+// manual count of non-space runs — identical to (text.match(/\S+/g) || []).length
 function wordsOf(text) {
-  const m = text.match(WORDS_RE);
-  return m === null ? 0 : m.length;
+  let count = 0;
+  let inWord = false;
+  for (let k = 0; k < text.length; k++) {
+    const sp = text.charCodeAt(k) <= 32;
+    if (sp) inWord = false;
+    else if (!inWord) { inWord = true; count++; }
+  }
+  return count;
 }
 
 function resolvePath(dir, rel) {
@@ -608,7 +626,12 @@ function build(input) {
   // 1. readSources
   const files = [...input.files].sort((x, y) => byCodeUnits(x.path, y.path));
   for (const f of files) {
-    if (f.path.endsWith('.md')) b.sources.push({ path: f.path, text: f.content.replace(/\r\n?/g, '\n') });
+    let text = null;
+    if (f.path.endsWith('.md')) {
+      const c = f.content;
+      text = c.indexOf('\r') === -1 ? c : c.replace(/\r\n?/g, '\n');
+    }
+    if (text !== null) b.sources.push({ path: f.path, text });
     else b.statics.push({ path: f.path, content: f.content });
   }
 
