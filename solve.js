@@ -683,24 +683,36 @@ function build(input) {
     const staticPaths = new Set(b.statics.map((f) => f.path));
     const bySource = b.bySource;
     const broken = b.broken;
+    const linkCache = new Map(); // dir -> Map(target -> final href)
+    const mk = () => new Map();
+    const linkOf = (dir, target) => {
+      let byDir = linkCache.get(dir);
+      if (byDir === undefined) { byDir = mk(); linkCache.set(dir, byDir); }
+      let hit = byDir.get(target);
+      if (hit !== undefined) return hit;
+      const c0 = target.charCodeAt(0);
+      if (c0 === 47 /* / */ || c0 === 35 /* # */ || SCHEME_RE.test(target)) return target; // absolute: no caching side effects, identical
+      const hash = target.indexOf('#');
+      const rel = hash === -1 ? target : target.slice(0, hash);
+      const frag = hash === -1 ? '' : target.slice(hash);
+      const path = rel === '' ? null : resolvePath(dir, rel);
+      if (path !== null) {
+        const t = bySource.get(path);
+        if (t !== undefined) { hit = `${t.url}${frag}`; byDir.set(target, hit); return hit; }
+        if (staticPaths.has(path)) { hit = `${base}/${path}${frag}`; byDir.set(target, hit); return hit; }
+      }
+      hit = target;
+      byDir.set(target, hit);
+      return hit;
+    };
     for (const s of b.sources) {
       const dir = dirOf(s.path);
       const spath = s.path;
       const env = {
         link: (target) => {
-          const c0 = target.charCodeAt(0);
-          if (c0 === 47 /* / */ || c0 === 35 /* # */ || SCHEME_RE.test(target)) return target;
-          const hash = target.indexOf('#');
-          const rel = hash === -1 ? target : target.slice(0, hash);
-          const frag = hash === -1 ? '' : target.slice(hash);
-          const path = rel === '' ? null : resolvePath(dir, rel);
-          if (path !== null) {
-            const t = bySource.get(path);
-            if (t !== undefined) return `${t.url}${frag}`;
-            if (staticPaths.has(path)) return `${base}/${path}${frag}`;
-          }
-          broken.add(`broken-link ${spath} -> ${target}`);
-          return target;
+          const out = linkOf(dir, target);
+          if (out === target && target.charCodeAt(0) !== 47 && target.charCodeAt(0) !== 35 && !SCHEME_RE.test(target)) broken.add(`broken-link ${spath} -> ${target}`);
+          return out;
         },
       };
       const md = renderMarkdown(s.body, env);
