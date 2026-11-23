@@ -436,36 +436,76 @@ function textOf(v) {
 
 const truthy = (v) => (Array.isArray(v) ? v.length > 0 : v !== undefined && v !== null && v !== false && v !== '' && v !== 0);
 
-function renderNodes(nodes, scope, ctx, depth) {
-  let out = '';
+/** nodes compiled ONCE per build into a (scope, depth) -> string closure chain. */
+function compileNodes(nodes, compiled) {
+  const lits = []; // lits[k]: literal string, or null when fns[k] must run
+  const fns = [];
+  let lastText = false; // lits[last] is an accumulating literal (no fn pushed after it)
   for (const n of nodes) {
     switch (n.kind) {
-      case 'text': out += n.text; break;
-      case 'var': out += ctx.escape(textOf(pathGet(scope, n.path))); break;
-      case 'raw': out += textOf(pathGet(scope, n.path)); break;
+      case 'text':
+        if (lastText) lits[lits.length - 1] += n.text;
+        else { lits.push(n.text); fns.push(null); lastText = true; }
+        break;
+      case 'var':
+        lits.push(null);
+        fns.push((scope) => escapeHtml(textOf(pathGet(scope, n.path))));
+        lastText = false;
+        break;
+      case 'raw':
+        lits.push(null);
+        fns.push((scope) => textOf(pathGet(scope, n.path)));
+        lastText = false;
+        break;
       case 'if': {
-        const v = truthy(pathGet(scope, n.path));
-        const branch = v !== n.not ? n.then : n.else;
-        if (branch !== null) out += renderNodes(branch, scope, ctx, depth);
+        const thenC = compileNodes(n.then, compiled);
+        const elseC = n.else === null ? null : compileNodes(n.else, compiled);
+        lits.push(null);
+        fns.push((scope, depth) => { const v = truthy(pathGet(scope, n.path)); const b = v !== n.not ? thenC : elseC; return b !== null ? b(scope, depth) : ''; });
+        lastText = false;
         break;
       }
       case 'for': {
-        const xs = pathGet(scope, n.path);
-        if (!Array.isArray(xs)) break;
-        for (let k = 0; k < xs.length; k++) {
-          const vars = { [n.name]: xs[k], loop: { index: k + 1, first: k === 0, last: k === xs.length - 1, length: xs.length } };
-          out += renderNodes(n.body, { vars, parent: scope }, ctx, depth);
-        }
+        const bodyC = compileNodes(n.body, compiled);
+        const name = n.name;
+        const path = n.path;
+        lits.push(null);
+        fns.push((scope, depth) => {
+          const xs = pathGet(scope, path);
+          if (!Array.isArray(xs)) return '';
+          let out = '';
+          for (let k = 0; k < xs.length; k++) {
+            out += bodyC({ vars: { [name]: xs[k], loop: { index: k + 1, first: k === 0, last: k === xs.length - 1, length: xs.length } }, parent: scope }, depth);
+          }
+          return out;
+        });
+        lastText = false;
         break;
       }
-      case 'include': {
-        const t = ctx.templates.get(n.name);
-        if (t !== undefined && depth < INCLUDE_DEPTH) out += renderNodes(t, scope, ctx, depth + 1);
+      case 'include':
+        lits.push(null);
+        fns.push((scope, depth) => {
+          const t = compiled.get(n.name);
+          return t !== undefined && depth < INCLUDE_DEPTH ? t(scope, depth + 1) : '';
+        });
+        lastText = false;
         break;
-      }
     }
   }
-  return out;
+  if (fns.length === 0) return () => '';
+  if (fns.length === 1) return fns[0] === null ? () => lits[0] : (scope, depth) => fns[0](scope, depth);
+  if (lits.every((x, k) => fns[k] === null)) {
+    const all = lits.join('');
+    return () => all;
+  }
+  return (scope, depth) => {
+    let out = '';
+    for (let k = 0; k < fns.length; k++) {
+      const f = fns[k];
+      out += f === null ? lits[k] : f(scope, depth);
+    }
+    return out;
+  };
 }
 
 function parseTemplate(name, src) {
@@ -538,6 +578,7 @@ const dirOf = (path) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/'
 
 function build(input) {
   const templates = new Map();
+  const compiled = new Map();
   const report = [];
   for (const name of Object.keys(input.templates).sort(byCodeUnits)) {
     try {
@@ -547,6 +588,7 @@ function build(input) {
       report.push(err.message);
     }
   }
+  for (const [name, nodes] of templates) compiled.set(name, compileNodes(nodes, compiled));
   const base = input.site.base_url.replace(/\/+$/, '');
   const b = {
     input,
@@ -723,10 +765,9 @@ function build(input) {
     const site = { title: input.site.title, base_url: base };
     const allTags = b.tags.map((t) => ({ name: t.name, slug: t.slug, url: t.url, count: t.posts.length }));
     const recent = b.posts.slice(0, input.site.recent).map((p) => b.cards.get(p));
-    const ctx = { templates, escape: escapeHtml };
     const render = (name, vars) => {
-      const nodes = templates.get(name);
-      return nodes === undefined ? null : renderNodes(nodes, { vars: { site, tags: allTags, recent, ...vars }, parent: null }, ctx, 0);
+      const t = compiled.get(name);
+      return t === undefined ? null : t({ vars: { site, tags: allTags, recent, ...vars }, parent: null }, 0);
     };
     for (const s of b.sources) b.output[`${s.outDir}/index.html`] = render(s.layout, { page: pageOf(s) });
     const per = input.site.per_page;
