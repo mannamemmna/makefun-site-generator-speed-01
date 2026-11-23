@@ -141,20 +141,20 @@ function valueOf(key, raw) {
 }
 
 function parseFrontMatter(text) {
-  const lines = text.split('\n');
-  if (lines[0] !== '---') return { error: 'no front matter' };
-  let close = -1;
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i] === '---') { close = i; break; }
-  }
-  if (close === -1) return { error: 'the front matter is not closed' };
+  if (text !== '---' && !text.startsWith('---\n')) return { error: 'no front matter' };
+  // close: first line (1-based index >= 1) that is exactly '---'
+  let p = text.indexOf('\n---', 3);
+  while (p !== -1 && p + 4 < text.length && text.charCodeAt(p + 4) !== 10) p = text.indexOf('\n---', p + 1);
+  if (p === -1) return { error: 'the front matter is not closed' };
+  const region = text.slice(4, p);
+  const lines = region === '' ? [] : region.split('\n');
   const data = {};
-  for (let i = 1; i < close; i++) {
+  for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (/^[ \t]*$/.test(line)) continue;
     if (line.startsWith('#')) continue;
     const m = LINE_RE.exec(line);
-    if (!m) return { error: `line ${i + 1} is not "key: value"` };
+    if (!m) return { error: `line ${i + 2} is not "key: value"` };
     const key = m[1];
     const raw = (m[2] ?? '').replace(/[ \t]+$/, '');
     if (!KEYS.includes(key)) return { error: `unknown key "${key}"` };
@@ -165,7 +165,7 @@ function parseFrontMatter(text) {
     data[key] = v.value;
   }
   if (!Object.hasOwn(data, 'title')) return { error: 'no title' };
-  return { data, body: lines.slice(close + 1).join('\n') };
+  return { data, body: text.slice(p + 5) };
 }
 
 // ---------------------------------------------------------------- markdown
