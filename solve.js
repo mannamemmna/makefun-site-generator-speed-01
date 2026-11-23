@@ -486,11 +486,12 @@ function compileNodes(nodes, compiled) {
         fns.push((scope, depth) => {
           const xs = pathGet(scope, path);
           if (!Array.isArray(xs)) return '';
-          let out = '';
-          for (let k = 0; k < xs.length; k++) {
-            out += bodyC({ vars: { [name]: xs[k], loop: { index: k + 1, first: k === 0, last: k === xs.length - 1, length: xs.length } }, parent: scope }, depth);
+          const len = xs.length;
+          const parts = new Array(len);
+          for (let k = 0; k < len; k++) {
+            parts[k] = bodyC({ vars: { [name]: xs[k], loop: { index: k + 1, first: k === 0, last: k === len - 1, length: len } }, parent: scope }, depth);
           }
-          return out;
+          return parts.join('');
         });
         lastText = false;
         break;
